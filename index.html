@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI入退場カウンター</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script>
+        window.cdnErrors = [];
+        window.addEventListener('error', function(e) {
+            if (e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK')) {
+                const src = e.target.src || e.target.href;
+                window.cdnErrors.push(src);
+                console.error("CDN Load Error: ", src);
+            }
+        }, true);
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs" onerror="window.cdnErrors.push('TensorFlow.js (tfjs)')"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd" onerror="window.cdnErrors.push('COCO-SSD')"></script>
+    <script src="https://unpkg.com/lucide@latest" onerror="window.cdnErrors.push('Lucide Icons')"></script>
+    <style>
+        .mirror {
+            transform: scaleX(-1);
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans flex flex-col">
+
+    <div id="system-error-screen" class="hidden fixed inset-0 bg-slate-950/95 flex flex-col items-center justify-center p-6 text-center z-50 animate-fadeIn">
+        <div class="p-3.5 bg-rose-500/10 rounded-full text-rose-500 mb-4 animate-pulse">
+            <svg class="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+        </div>
+        <h2 class="text-lg font-bold text-slate-200 mb-2">外部ライブラリ(CDN)のロードに失敗しました</h2>
+        <p class="text-xs text-slate-400 max-w-md leading-relaxed mb-4">
+            職場のセキュリティフィルターまたはプロキシサーバーによって、AI判定に必要なプログラムの読み込みが遮断されています。
+        </p>
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6 max-w-lg w-full text-left font-mono text-xs text-rose-400">
+            <span class="text-slate-400 block mb-1">■ 読み込めなかったライブラリ一覧：</span>
+            <ul id="error-lib-list" class="list-disc list-inside space-y-1"></ul>
+        </div>
+        <div class="text-[11px] text-slate-500 max-w-sm">
+            【対策】IT管理部門に「cdn.jsdelivr.net」および「unpkg.com」への通信許可を申請するか、社内VPNを切断したプライベートな回線（テザリング等）でお試しください。
+        </div>
+    </div>
+
+    <header class="bg-slate-900 border-b border-slate-800 p-4 shadow-md">
+        <div class="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="p-2 bg-indigo-600 rounded-lg text-white">
+                    <i data-lucide="scan-eye" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight">AI入退場カウンター</h1>
+                </div>
+            </div>
+            
+            <div class="flex items-center gap-4 text-sm">
+                <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded-full border border-slate-700">
+                    <span class="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping" id="status-ping"></span>
+                    <span id="status-text" class="text-xs font-semibold text-slate-300">初期化中...</span>
+                </div>
+                <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded-full border border-slate-700">
+                    <i data-lucide="database" class="w-4 h-4 text-emerald-400"></i>
+                    <span id="gas-status" class="text-xs text-slate-300">GAS接続: 判別中</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="flex-1 max-w-7xl w-full mx-auto p-4 grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <div class="lg:col-span-2 flex flex-col gap-4">
+            <div class="relative bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden shadow-2xl flex items-center justify-center aspect-video">
+                <video id="webcam" autoplay playsinline muted class="hidden"></video>
+                <canvas id="canvas" class="w-full h-full object-cover"></canvas>
+
+                <div id="loading-overlay" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-4 z-10 transition-opacity duration-500">
+                    <div class="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                    <p class="text-slate-300 text-sm font-semibold tracking-wide">AIシステムの初期化中</p>
+                    <div class="bg-slate-900 border border-slate-800/80 rounded-lg px-4 py-2.5 max-w-xs w-full text-center">
+                        <p id="loading-step-text" class="text-xs text-indigo-400 font-bold font-mono">1/3 AIライブラリをロードしています...</p>
+                    </div>
+                </div>
+
+                <div id="hud-container" class="absolute top-4 left-4 right-4 flex justify-between pointer-events-none z-5 transition-all duration-300">
+                    <div id="hud-in-box" class="bg-emerald-500/90 text-white px-4 py-2 rounded-xl backdrop-blur-md flex items-center gap-2 shadow-lg transition-all duration-300">
+                        <span class="text-xs font-bold uppercase tracking-wider">IN (入場)</span>
+                        <span id="hud-count-in" class="text-xl font-black">0</span>
+                    </div>
+                    <div id="hud-out-box" class="bg-rose-500/90 text-white px-4 py-2 rounded-xl backdrop-blur-md flex items-center gap-2 shadow-lg transition-all duration-300">
+                        <span id="hud-count-out" class="text-xl font-black">0</span>
+                        <span class="text-xs font-bold uppercase tracking-wider">OUT (退場)</span>
+                    </div>
+                </div>
+
+                <div id="flash-in" class="absolute inset-0 bg-emerald-500/20 pointer-events-none opacity-0 transition-opacity duration-200 z-4"></div>
+                <div id="flash-out" class="absolute inset-0 bg-rose-500/20 pointer-events-none opacity-0 transition-opacity duration-200 z-4"></div>
+            </div>
+
+            <div class="bg-slate-900 p-4 rounded-xl border border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1.5 font-semibold">カメラ・方向設定</label>
+                    <div class="flex flex-col gap-2">
+                        <button id="btn-toggle-mirror" class="w-full py-2 px-3 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition">
+                            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>左右反転 (鏡像)
+                        </button>
+                        <button id="btn-toggle-direction" class="w-full py-2 px-3 bg-indigo-900/40 hover:bg-indigo-800/80 border border-indigo-700/50 active:bg-indigo-700 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition text-indigo-200">
+                            <i data-lucide="arrow-left-right" class="w-3.5 h-3.5"></i>左右方向を入れ替え
+                        </button>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1.5 font-semibold">判定エリア調整</label>
+                    <div class="flex items-center gap-2">
+                        <input type="range" id="range-line" min="20" max="80" value="50" class="w-full accent-indigo-500 bg-slate-800 h-2 rounded-lg appearance-none cursor-pointer">
+                        <span id="range-val" class="text-xs font-bold text-slate-300 w-8 text-right">50%</span>
+                    </div>
+                    <div class="mt-3 text-[11px] text-slate-400 flex flex-col gap-1">
+                        <div class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-500"></span><span id="desc-in-area">左側: 中(IN)から</span></div>
+                        <div class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-rose-500"></span><span id="desc-out-area">右側: 外(OUT)から</span></div>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1.5 font-semibold">システムデバッグ</label>
+                    <div class="flex flex-col gap-2">
+                        <button id="btn-reset-counter" class="w-full py-2 px-3 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition">
+                            <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
+                            カウンターリセット
+                        </button>
+                        <button id="btn-reset-data" class="w-full py-2 px-3 bg-rose-950/40 border border-rose-900/50 hover:bg-rose-900 hover:text-white text-rose-300 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition">
+                            <i data-lucide="database-zap" class="w-3.5 h-3.5"></i>
+                            全データリセット
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="flex flex-col gap-6">
+            <div class="grid grid-cols-2 gap-4">
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between shadow-lg relative overflow-hidden">
+                    <div class="absolute -right-4 -bottom-4 text-emerald-500/10 pointer-events-none"><i data-lucide="log-in" class="w-24 h-24"></i></div>
+                    <div><span class="text-xs font-bold text-emerald-400 tracking-wider">総 入場者数</span><div class="text-4xl font-black text-slate-100 mt-2" id="count-in">0</div></div>
+                    <p class="text-[10px] text-slate-400 mt-2" id="label-pass-in">← 右から左へ通過</p>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between shadow-lg relative overflow-hidden">
+                    <div class="absolute -right-4 -bottom-4 text-rose-500/10 pointer-events-none"><i data-lucide="log-out" class="w-24 h-24"></i></div>
+                    <div><span class="text-xs font-bold text-rose-400 tracking-wider">総 退場者数</span><div class="text-4xl font-black text-slate-100 mt-2" id="count-out">0</div></div>
+                    <p class="text-[10px] text-slate-400 mt-2" id="label-pass-out">左から右へ通過 →</p>
+                </div>
+            </div>
+
+            <div class="bg-slate-900 border border-slate-800 rounded-xl flex-1 flex flex-col overflow-hidden shadow-lg max-h-[400px] lg:max-h-none">
+                <div class="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+                    <div class="flex items-center gap-2"><i data-lucide="history" class="w-4 h-4 text-indigo-400"></i><h2 class="text-sm font-bold">リアルタイム通過ログ</h2></div>
+                    <span class="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-mono" id="log-counter">0件</span>
+                </div>
+                <div id="log-list" class="flex-1 overflow-y-auto p-2 space-y-2 min-h-[250px] text-xs font-mono">
+                    <div class="text-center text-slate-500 py-8" id="empty-log-msg"><i data-lucide="video-off" class="w-8 h-8 mx-auto mb-2 opacity-50"></i>まだ検知履歴はありません。</div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="bg-slate-900 border-t border-slate-800 p-3 text-center text-xs text-slate-500">
+        <div class="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-2">
+            <p>© 2026 AI Flow Counter Setup</p>
+        </div>
+    </footer>
+    <div id="toast" class="fixed bottom-4 right-4 bg-slate-800 border border-slate-700 text-slate-200 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 transform translate-y-20 opacity-0 transition-all duration-300 z-50">
+        <div id="toast-icon" class="p-1.5 rounded-lg"></div>
+        <div><p id="toast-title" class="text-xs font-bold text-white"></p><p id="toast-body" class="text-[11px] text-slate-400"></p></div>
+    </div>
+
+    <script>
+        const GAS_API_URL = "https://script.google.com/macros/s/AKfycbxukcVGRyHDnrrvb02Ow6vO_WVP8CitdASRhXy0OOdSv8R4tWK-yo4SkDV1-Q4zNpeC/exec";
+
+        let model = null;
+        let isCameraActive = false;
+        let isMirror = true; 
+        let isReversedDirection = false; 
+        let lineRatio = 0.5; 
+        const HYSTERESIS_BUFFER_RATIO = 0.04; 
+
+        let inCount = 0; let outCount = 0; let logsCount = 0;
+        let trackedPersons = []; let nextPersonId = 1;
+        const MISSING_THRESHOLD = 18; const DISTANCE_THRESHOLD = 130; 
+
+        const isGasEnvironment = typeof google !== 'undefined' && google.script && google.script.run;
+
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingStepText = document.getElementById('loading-step-text');
+        const statusText = document.getElementById('status-text');
+        const statusPing = document.getElementById('status-ping');
+        const gasStatus = document.getElementById('gas-status');
+        const rangeLine = document.getElementById('range-line');
+        const rangeVal = document.getElementById('range-val');
+        
+        const btnToggleMirror = document.getElementById('btn-toggle-mirror');
+        const btnToggleDirection = document.getElementById('btn-toggle-direction');
+        const btnResetCounter = document.getElementById('btn-reset-counter');
+        const btnResetData = document.getElementById('btn-reset-data');
+
+        const hudContainer = document.getElementById('hud-container');
+        const descInArea = document.getElementById('desc-in-area');
+        const descOutArea = document.getElementById('desc-out-area');
+        const labelPassIn = document.getElementById('label-pass-in');
+        const labelPassOut = document.getElementById('label-pass-out');
+
+        const hudIn = document.getElementById('hud-count-in');
+        const hudOut = document.getElementById('hud-count-out');
+        const boardIn = document.getElementById('count-in');
+        const boardOut = document.getElementById('count-out');
+        const logList = document.getElementById('log-list');
+        const emptyLogMsg = document.getElementById('empty-log-msg');
+        const logCounter = document.getElementById('log-counter');
+        const flashIn = document.getElementById('flash-in');
+        const flashOut = document.getElementById('flash-out');
+        const hudInBox = document.getElementById('hud-in-box');
+        const hudOutBox = document.getElementById('hud-out-box');
+
+        function showToast(title, body, type = 'info') {
+            const toast = document.getElementById('toast');
+            const iconContainer = document.getElementById('toast-icon');
+            const toastTitle = document.getElementById('toast-title');
+            const toastBody = document.getElementById('toast-body');
+
+            toastTitle.innerText = title; toastBody.innerText = body;
+
+            if (type === 'success') {
+                iconContainer.className = 'p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400';
+                iconContainer.innerHTML = '<i data-lucide="check" class="w-4 h-4"></i>';
+            } else if (type === 'error') {
+                iconContainer.className = 'p-1.5 rounded-lg bg-rose-500/20 text-rose-400';
+                iconContainer.innerHTML = '<i data-lucide="alert-triangle" class="w-4 h-4"></i>';
+            } else {
+                iconContainer.className = 'p-1.5 rounded-lg bg-indigo-500/20 text-indigo-400';
+                iconContainer.innerHTML = '<i data-lucide="info" class="w-4 h-4"></i>';
+            }
+            lucide.createIcons();
+
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => { toast.classList.add('translate-y-20', 'opacity-0'); }, 3000);
+        }
+
+        async function init() {
+            lucide.createIcons();
+            updateGasStatusIndicator();
+            updateDirectionUIElements();
+
+            if (window.cdnErrors.length > 0 || typeof tf === 'undefined' || typeof cocoSsd === 'undefined') {
+                showCdnErrorScreen(); return;
+            }
+            try {
+                model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+                await setupCamera();
+                canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+                isCameraActive = true;
+                loadingOverlay.classList.add('opacity-0');
+                setTimeout(() => loadingOverlay.classList.add('hidden'), 500);
+                statusText.innerText = "システム稼働中";
+                statusPing.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping";
+                showToast("起動成功", "AI判定システムが正常に起動しました。", "success");
+                detectLoop();
+            } catch (err) {
+                statusText.innerText = "起動エラー";
+                statusPing.className = "w-2.5 h-2.5 rounded-full bg-rose-500";
+                alert("カメラを有効にできませんでした。");
+            }
+        }
+
+        function showCdnErrorScreen() {
+            document.getElementById('system-error-screen').classList.remove('hidden');
+        }
+
+        function updateGasStatusIndicator() {
+            if (isGasEnvironment) { gasStatus.innerHTML = `<i data-lucide="cloud-lightning" class="w-4 h-4 text-emerald-400"></i><span class="text-xs text-emerald-400 font-bold">GAS: 本番動作中</span>`; }
+            else if (GAS_API_URL && GAS_API_URL.startsWith("https://script.google.com/")) { gasStatus.innerHTML = `<i data-lucide="link" class="w-4 h-4 text-indigo-400"></i><span class="text-xs text-indigo-400 font-bold">GAS: ローカルAPI</span>`; }
+            else { gasStatus.innerHTML = `<i data-lucide="cloud-off" class="w-4 h-4 text-slate-500"></i><span class="text-xs text-slate-400">GAS: 未接続</span>`; }
+            lucide.createIcons();
+        }
+
+        async function setupCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" }, audio: false });
+            video.srcObject = stream;
+            return new Promise((resolve) => { video.onloadedmetadata = () => { video.play(); resolve(); }; });
+        }
+
+        function getDistance(p1, p2) { return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2)); }
+
+        function updateDirectionUIElements() {
+            if (!isReversedDirection) {
+                descInArea.innerText = "左側: 中(IN)から (入場)"; descOutArea.innerText = "右側: 外(OUT)から (退場)";
+                labelPassIn.innerText = "← 右から左へ不感帯を通過"; labelPassOut.innerText = "左から右へ不感帯を通過 →";
+                if(hudInBox && hudOutBox) { hudInBox.style.order = "1"; hudOutBox.style.order = "2"; }
+            } else {
+                descInArea.innerText = "右側: 中(IN)から (入場)"; descOutArea.innerText = "左側: 外(OUT)から (退場)";
+                labelPassIn.innerText = "左から右へ不感帯を通過 →"; labelPassOut.innerText = "← 右から左へ不感帯を通過";
+                if(hudInBox && hudOutBox) { hudInBox.style.order = "2"; hudOutBox.style.order = "1"; }
+            }
+        }
+
+        function updateTrackingAndDetectPass(detections) {
+            const frameWidth = canvas.width; const centerX = frameWidth * lineRatio; const bufferPx = frameWidth * HYSTERESIS_BUFFER_RATIO;
+            const lineLeft = centerX - bufferPx; const lineRight = centerX + bufferPx; 
+            let currentFrameTracked = [];
+
+            const detectedPersons = detections.filter(d => d.class === 'person' && d.score > 0.45).map(d => {
+                const [x, y, width, height] = d.bbox;
+                return { x: x + width / 2, y: y + height / 2, bbox: d.bbox, score: d.score };
+            });
+
+            detectedPersons.forEach(detected => {
+                let bestMatch = null; let minDistance = DISTANCE_THRESHOLD;
+                trackedPersons.forEach(tracked => {
+                    const dist = getDistance({ x: tracked.currentX, y: tracked.currentY }, { x: detected.x, y: detected.y });
+                    if (dist < minDistance) { minDistance = dist; bestMatch = tracked; }
+                });
+
+                if (bestMatch) {
+                    bestMatch.lastX = bestMatch.currentX; bestMatch.lastY = bestMatch.currentY;
+                    bestMatch.currentX = detected.x; bestMatch.currentY = detected.y;
+                    bestMatch.bbox = detected.bbox; bestMatch.score = detected.score; bestMatch.missingFrames = 0;
+                    currentFrameTracked.push(bestMatch);
+                    trackedPersons = trackedPersons.filter(t => t.id !== bestMatch.id);
+                } else {
+                    let visualX = isMirror ? (frameWidth - detected.x) : detected.x;
+                    let visualLineLeft = isMirror ? (frameWidth - lineRight) : lineLeft;
+                    let visualLineRight = isMirror ? (frameWidth - lineLeft) : lineRight;
+                    let initialState = 'CENTER';
+                    if (visualX <= visualLineLeft) { initialState = 'LEFT'; } else if (visualX >= visualLineRight) { initialState = 'RIGHT'; }
+
+                    currentFrameTracked.push({
+                        id: nextPersonId++, lastX: detected.x, lastY: detected.y, currentX: detected.x, currentY: detected.y,
+                        bbox: detected.bbox, score: detected.score, missingFrames: 0, state: initialState, hasCounted: false    
+                    });
+                }
+            });
+
+            trackedPersons.forEach(tracked => { tracked.missingFrames++; if (tracked.missingFrames < MISSING_THRESHOLD) { currentFrameTracked.push(tracked); } });
+            trackedPersons = currentFrameTracked;
+
+            trackedPersons.forEach(person => {
+                if (person.lastX === person.currentX || person.hasCounted) return;
+                const currX = person.currentX;
+                let visualCurrX = isMirror ? (frameWidth - currX) : currX;
+                let visualLineLeft = isMirror ? (frameWidth - lineRight) : lineLeft;
+                let visualLineRight = isMirror ? (frameWidth - lineLeft) : lineRight;
+
+                if (person.state === 'RIGHT') {
+                    if (visualCurrX < visualLineLeft) { person.state = 'LEFT'; person.hasCounted = true; registerPass(isReversedDirection ? 'OUT' : 'IN', person.id); }
+                } else if (person.state === 'LEFT') {
+                    if (visualCurrX > visualLineRight) { person.state = 'RIGHT'; person.hasCounted = true; registerPass(isReversedDirection ? 'IN' : 'OUT', person.id); }
+                } else if (person.state === 'CENTER') {
+                    if (visualCurrX <= visualLineLeft) { person.state = 'LEFT'; } else if (visualCurrX >= visualLineRight) { person.state = 'RIGHT'; }
+                }
+            });
+        }
+
+        function registerPass(direction, personId) {
+            const timeStr = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            if (direction === 'IN') {
+                inCount++; hudIn.innerText = inCount; boardIn.innerText = inCount; triggerFlash('IN'); addLog('IN', personId, timeStr); sendToGas("入場", personId);
+            } else {
+                outCount++; hudOut.innerText = outCount; boardOut.innerText = outCount; triggerFlash('OUT'); addLog('OUT', personId, timeStr); sendToGas("退場", personId);
+            }
+        }
+
+        function triggerFlash(direction) {
+            const targetFlash = direction === 'IN' ? flashIn : flashOut;
+            targetFlash.classList.remove('opacity-0'); targetFlash.classList.add('opacity-100');
+            setTimeout(() => { targetFlash.classList.remove('opacity-100'); targetFlash.classList.add('opacity-0'); }, 180);
+        }
+
+        function addLog(type, id, time) {
+            emptyLogMsg.classList.add('hidden'); logsCount++; logCounter.innerText = `${logsCount}件`;
+            const item = document.createElement('div');
+            item.className = `flex items-center justify-between p-2.5 border rounded-lg animate-fadeIn ${type === 'IN' ? 'bg-emerald-950/40 border-emerald-900/50 text-emerald-200' : 'bg-rose-950/40 border-rose-900/50 text-rose-200'}`;
+            item.innerHTML = `<div class="flex items-center gap-2"><span class="px-2 py-0.5 font-bold rounded-md text-[10px] text-slate-950 ${type === 'IN' ? 'bg-emerald-500' : 'bg-rose-500'}">${type}</span><span class="font-bold">ID: ${id}</span></div><span class="text-slate-400 text-xs">${time}</span>`;
+            logList.insertBefore(item, logList.firstChild);
+        }
+
+        function sendToGas(type, personId) {
+            let titleText = type === "RESET" ? "データ初期化" : "GAS同期完了";
+            let msgText = type === "RESET" ? "クラウドの記録データをリセットしました。" : `${type}データをクラウドに同期しました。`;
+            let msgLocalText = type === "RESET" ? "[ローカルAPI] データリセット命令を送信しました。" : `[ローカルAPI] ${type}データを送信しました。`;
+
+            if (isGasEnvironment) {
+                google.script.run
+                    .withSuccessHandler((response) => { showToast(titleText, msgText, "success"); })
+                    .withFailureHandler((error) => { showToast("GASエラー", "処理に失敗しました。", "error"); })
+                    .logRecord(type, personId);
+            } else if (GAS_API_URL && GAS_API_URL.startsWith("https://script.google.com/")) {
+                fetch(GAS_API_URL, { method: "POST", mode: "no-cors", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: type, personId: personId }) })
+                .then(() => { showToast(titleText, msgLocalText, "success"); })
+                .catch(error => { showToast("送信失敗", "ローカルAPI送信に失敗しました。", "error"); });
+            } else {
+                if (type !== "RESET") { showToast("ローカル記録完了", "PC内でのみカウントしました。", "info"); } 
+                else { showToast("ローカル初期化", "PC内のカウントのみリセットしました。", "info"); }
+            }
+        }
+
+        async function detectLoop() {
+            if (!isCameraActive) return;
+            const predictions = await model.detect(video);
+            updateTrackingAndDetectPass(predictions); drawCanvas(predictions);
+            requestAnimationFrame(detectLoop);
+        }
+
+        function drawCanvas(predictions) {
+            ctx.save();
+            if (isMirror) { ctx.translate(canvas.width, 0); ctx.scale(-1, 1); }
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            const centerX = canvas.width * lineRatio; const bufferPx = canvas.width * HYSTERESIS_BUFFER_RATIO;
+            const lineLeft = centerX - bufferPx; const lineRight = centerX + bufferPx;
+
+            ctx.fillStyle = 'rgba(99, 102, 241, 0.25)'; ctx.fillRect(lineLeft, 0, lineRight - lineLeft, canvas.height);
+            ctx.fillStyle = !isReversedDirection ? 'rgba(16, 185, 129, 0.08)' : 'rgba(244, 63, 94, 0.08)'; ctx.fillRect(0, 0, lineLeft, canvas.height);
+            ctx.fillStyle = !isReversedDirection ? 'rgba(244, 63, 94, 0.08)' : 'rgba(16, 185, 129, 0.08)'; ctx.fillRect(lineRight, 0, canvas.width - lineRight, canvas.height);
+
+            ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.strokeStyle = !isReversedDirection ? '#10b981' : '#f43f5e'; ctx.moveTo(lineLeft, 0); ctx.lineTo(lineLeft, canvas.height); ctx.stroke();
+            ctx.beginPath(); ctx.strokeStyle = !isReversedDirection ? '#f43f5e' : '#10b981'; ctx.moveTo(lineRight, 0); ctx.lineTo(lineRight, canvas.height); ctx.stroke();
+
+            ctx.fillStyle = '#ffffff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
+            ctx.fillRect(centerX - 60, 10, 120, 20); ctx.fillStyle = '#1e1b4b'; ctx.fillText('HYSTERESIS BUFFER', centerX, 24);
+
+            trackedPersons.forEach(person => {
+                const opacity = person.missingFrames > 0 ? 0.3 : 0.85;
+                const [x, y, width, height] = person.bbox;
+                let drawX = isMirror ? (canvas.width - x - width) : x;
+
+                let personBorderColor = person.hasCounted ? `rgba(148, 163, 184, ${opacity})` : (person.state === 'LEFT' ? `rgba(${!isReversedDirection ? '16, 185, 129' : '244, 63, 94'}, ${opacity})` : `rgba(${!isReversedDirection ? '244, 63, 94' : '16, 185, 129'}, ${opacity})`);
+                ctx.strokeStyle = personBorderColor; ctx.lineWidth = 3; ctx.strokeRect(drawX, y, width, height);
+                ctx.fillStyle = personBorderColor; ctx.fillRect(drawX, y - 24, 115, 24);
+                
+                ctx.fillStyle = '#ffffff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left';
+                let areaName = person.state === 'LEFT' ? (!isReversedDirection ? "中(IN)" : "外(OUT)") : (!isReversedDirection ? "外(OUT)" : "中(IN)");
+                ctx.fillText(`👤 ID: ${person.id} (${person.hasCounted ? "完了" : areaName})`, drawX + 6, y - 8);
+
+                let drawCenterX = isMirror ? (canvas.width - person.currentX) : person.currentX;
+                ctx.beginPath(); ctx.arc(drawCenterX, person.currentY, 6, 0, 2 * Math.PI);
+                ctx.fillStyle = person.hasCounted ? '#cbd5e1' : '#ffffff'; ctx.fill();
+                ctx.strokeStyle = '#000000'; ctx.lineWidth = 2; ctx.stroke();
+            });
+        }
+
+        rangeLine.addEventListener('input', (e) => { lineRatio = e.target.value / 100; rangeVal.innerText = `${e.target.value}%`; });
+        btnToggleMirror.addEventListener('click', () => { isMirror = !isMirror; showToast("表示変更", `左右反転表示を ${isMirror ? 'オン' : 'オフ'} にしました。`, "info"); });
+        btnToggleDirection.addEventListener('click', () => { isReversedDirection = !isReversedDirection; updateDirectionUIElements(); showToast("判定方向を入替", "方向を切り替えました。", "success"); });
+
+        // 画面のみリセット
+        btnResetCounter.addEventListener('click', () => {
+            if (confirm("画面上のカウントとログのみをリセットしますか？\n（スプレッドシートのデータは消えません）")) {
+                resetUI();
+            }
+        });
+
+        // スプレッドシート連動の全リセット
+        btnResetData.addEventListener('click', () => {
+            if (confirm("【警告】スプレッドシートの記録も含め、全データを削除します。\nよろしいですか？")) {
+                resetUI();
+                sendToGas("RESET", 0); // GASにリセット命令を送信
+            }
+        });
+
+        function resetUI() {
+            inCount = 0; outCount = 0;
+            hudIn.innerText = 0; hudOut.innerText = 0;
+            boardIn.innerText = 0; boardOut.innerText = 0;
+            logsCount = 0; logCounter.innerText = "0件";
+            logList.innerHTML = `<div class="text-center text-slate-500 py-8" id="empty-log-msg"><i data-lucide="video-off" class="w-8 h-8 mx-auto mb-2 opacity-50"></i>まだ検知履歴はありません。</div>`;
+            lucide.createIcons();
+        }
+
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>

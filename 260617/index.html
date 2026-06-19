@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 人流判定 入退場カウンター (高精度・方向入替版)</title>
+    <!-- Tailwind CSS (Modern UI Framework) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- TensorFlow.js and COCO-SSD (AI Models) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* カメラの鏡像（ミラー）表示用の設定 */
+        .mirror {
+            transform: scaleX(-1);
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans flex flex-col">
+
+    <!-- ヘッダー -->
+    <header class="bg-slate-900 border-b border-slate-800 p-4 shadow-md">
+        <div class="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="p-2 bg-indigo-600 rounded-lg text-white">
+                    <i data-lucide="scan-eye" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight">AI 人流判定システム</h1>
+                    <p class="text-xs text-slate-400">高精度ヒステリシスゲート搭載・判定方向入替対応</p>
+                </div>
+            </div>
+            
+            <!-- ステータス表示 -->
+            <div class="flex items-center gap-4 text-sm">
+                <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded-full border border-slate-700">
+                    <span class="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping" id="status-ping"></span>
+                    <span id="status-text" class="text-xs font-semibold text-slate-300">AIモデルロード中...</span>
+                </div>
+                <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded-full border border-slate-700">
+                    <i data-lucide="database" class="w-4 h-4 text-emerald-400"></i>
+                    <span id="gas-status" class="text-xs text-slate-300">GAS接続: 待機中</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- メインコンテンツ -->
+    <main class="flex-1 max-w-7xl w-full mx-auto p-4 grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <!-- 左・中央：カメラプレビュー・設定 -->
+        <div class="lg:col-span-2 flex flex-col gap-4">
+            
+            <!-- メインカメラ表示エリア -->
+            <div class="relative bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden shadow-2xl flex items-center justify-center aspect-video">
+                <video id="webcam" autoplay playsinline muted class="hidden"></video>
+                <canvas id="canvas" class="w-full h-full object-cover"></canvas>
+
+                <!-- ローディングオーバーレイ -->
+                <div id="loading-overlay" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-4 z-10 transition-opacity duration-500">
+                    <div class="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                    <p class="text-slate-300 text-sm font-medium">AIモデルとカメラの準備をしています...</p>
+                    <p class="text-xs text-slate-500 max-w-xs text-center">※ 初回起動時はAIモデルの読み込みに数秒〜数十秒かかる場合があります。</p>
+                </div>
+
+                <!-- 画面内簡易カウンター表示 (方向入替連動のためにid="hud-container"を追加、初期はflex-row) -->
+                <div id="hud-container" class="absolute top-4 left-4 right-4 flex flex-row justify-between pointer-events-none z-5 transition-all duration-300">
+                    <div class="bg-emerald-500/90 text-white px-4 py-2 rounded-xl backdrop-blur-md flex items-center gap-2 shadow-lg">
+                        <span class="text-xs font-bold uppercase tracking-wider">IN (入場)</span>
+                        <span id="hud-count-in" class="text-xl font-black">0</span>
+                    </div>
+                    <div class="bg-rose-500/90 text-white px-4 py-2 rounded-xl backdrop-blur-md flex items-center gap-2 shadow-lg">
+                        <span id="hud-count-out" class="text-xl font-black">0</span>
+                        <span class="text-xs font-bold uppercase tracking-wider">OUT (退場)</span>
+                    </div>
+                </div>
+
+                <!-- 画面上の通過時フラッシュエフェクト -->
+                <div id="flash-in" class="absolute inset-0 bg-emerald-500/20 pointer-events-none opacity-0 transition-opacity duration-200 z-4"></div>
+                <div id="flash-out" class="absolute inset-0 bg-rose-500/20 pointer-events-none opacity-0 transition-opacity duration-200 z-4"></div>
+            </div>
+
+            <!-- 操作・設定パネル -->
+            <div class="bg-slate-900 p-4 rounded-xl border border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1.5 font-semibold">カメラ・方向設定</label>
+                    <div class="flex flex-col gap-2">
+                        <button id="btn-toggle-mirror" class="w-full py-2 px-3 bg-slate-800 hover:bg-slate-700 active:bg-slate-600 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition">
+                            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                            左右反転 (鏡像)
+                        </button>
+                        <button id="btn-toggle-direction" class="w-full py-2 px-3 bg-indigo-900/40 hover:bg-indigo-800/80 border border-indigo-700/50 active:bg-indigo-700 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition text-indigo-200">
+                            <i data-lucide="arrow-left-right" class="w-3.5 h-3.5"></i>
+                            左右方向を入れ替え
+                        </button>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1.5 font-semibold">判定エリア調整（中央境界）</label>
+                    <div class="flex items-center gap-2">
+                        <input type="range" id="range-line" min="20" max="80" value="50" class="w-full accent-indigo-500 bg-slate-800 h-2 rounded-lg appearance-none cursor-pointer">
+                        <span id="range-val" class="text-xs font-bold text-slate-300 w-8 text-right">50%</span>
+                    </div>
+                    <!-- 常に上側に入場、下側に退場が表示されるように構造変更 -->
+                    <div class="mt-3 text-[11px] text-slate-400 flex flex-col gap-1">
+                        <div class="flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                            <span id="desc-in-area">左側: 中(IN)から (入場)</span>
+                        </div>
+                        <div class="flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+                            <span id="desc-out-area">右側: 外(OUT)から (退場)</span>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1.5 font-semibold">システムデバッグ</label>
+                    <div class="flex gap-2">
+                        <button id="btn-reset-counter" class="flex-1 py-2 px-3 bg-slate-800 hover:bg-rose-950 hover:text-rose-300 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                            カウントリセット
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右：検知ログとカウント詳細 -->
+        <div class="flex flex-col gap-6">
+            
+            <!-- カウントボード -->
+            <div class="grid grid-cols-2 gap-4">
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between shadow-lg relative overflow-hidden">
+                    <div class="absolute -right-4 -bottom-4 text-emerald-500/10 pointer-events-none">
+                        <i data-lucide="log-in" class="w-24 h-24"></i>
+                    </div>
+                    <div>
+                        <span class="text-xs font-bold text-emerald-400 tracking-wider">総 入場者数</span>
+                        <div class="text-4xl font-black text-slate-100 mt-2" id="count-in">0</div>
+                    </div>
+                    <p class="text-[10px] text-slate-400 mt-2" id="label-pass-in">← 右から左へ不感帯を通過</p>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between shadow-lg relative overflow-hidden">
+                    <div class="absolute -right-4 -bottom-4 text-rose-500/10 pointer-events-none">
+                        <i data-lucide="log-out" class="w-24 h-24"></i>
+                    </div>
+                    <div>
+                        <span class="text-xs font-bold text-rose-400 tracking-wider">総 退場者数</span>
+                        <div class="text-4xl font-black text-slate-100 mt-2" id="count-out">0</div>
+                    </div>
+                    <p class="text-[10px] text-slate-400 mt-2" id="label-pass-out">左から右へ不感帯を通過 →</p>
+                </div>
+            </div>
+
+            <!-- 検知ログ履歴 -->
+            <div class="bg-slate-900 border border-slate-800 rounded-xl flex-1 flex flex-col overflow-hidden shadow-lg max-h-[400px] lg:max-h-none">
+                <div class="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
+                    <div class="flex items-center gap-2">
+                        <i data-lucide="history" class="w-4 h-4 text-indigo-400"></i>
+                        <h2 class="text-sm font-bold">リアルタイム通過ログ</h2>
+                    </div>
+                    <span class="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-mono" id="log-counter">0件</span>
+                </div>
+                
+                <!-- ログリスト -->
+                <div id="log-list" class="flex-1 overflow-y-auto p-2 space-y-2 min-h-[250px] text-xs font-mono">
+                    <div class="text-center text-slate-500 py-8" id="empty-log-msg">
+                        <i data-lucide="video-off" class="w-8 h-8 mx-auto mb-2 opacity-50"></i>
+                        まだ検知履歴はありません。
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- フッター -->
+    <footer class="bg-slate-900 border-t border-slate-800 p-3 text-center text-xs text-slate-500">
+        <div class="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-2">
+            <p>© 2026 AI Flow Counter Setup - GAS & TensorFlow Integration</p>
+            <p>※ 中央の不感帯（紫色のエリア）を体が完全にまたぎきることでカウントされます。</p>
+        </div>
+    </footer>
+
+    <!-- 通知ダイアログ -->
+    <div id="toast" class="fixed bottom-4 right-4 bg-slate-800 border border-slate-700 text-slate-200 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 transform translate-y-20 opacity-0 transition-all duration-300 z-50">
+        <div id="toast-icon" class="p-1.5 rounded-lg"></div>
+        <div>
+            <p id="toast-title" class="text-xs font-bold text-white"></p>
+            <p id="toast-body" class="text-[11px] text-slate-400"></p>
+        </div>
+    </div>
+
+    <!-- メインスクリプト -->
+    <script>
+        // --- 設定値・グローバル状態 ---
+        let model = null;
+        let isCameraActive = false;
+        let isMirror = true; // カメラの左右反転表示デフォルト
+        let isReversedDirection = false; // 入場・退場の方向反転フラグ (false: 右→左が入場, true: 左→右が入場)
+        let lineRatio = 0.5; // 判定の中心線のX座標位置割合 (50%)
+        
+        // ヒステリシス判定用の幅パラメータ (画面全体の割合。左右に4%ずつのバッファを置く)
+        const HYSTERESIS_BUFFER_RATIO = 0.04; 
+
+        let inCount = 0;
+        let outCount = 0;
+        let logsCount = 0;
+
+        // 追跡オブジェクトの状態管理
+        let trackedPersons = [];
+        let nextPersonId = 1;
+        const MISSING_THRESHOLD = 18; // 追跡維持猶予フレーム (約0.6秒)
+        const DISTANCE_THRESHOLD = 130; // 同一人物と見なす最大移動距離(px)
+
+        // GAS連携確認用
+        const isGasEnvironment = typeof google !== 'undefined' && google.script && google.script.run;
+
+        // UI要素
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const statusText = document.getElementById('status-text');
+        const statusPing = document.getElementById('status-ping');
+        const gasStatus = document.getElementById('gas-status');
+        const rangeLine = document.getElementById('range-line');
+        const rangeVal = document.getElementById('range-val');
+        const btnToggleMirror = document.getElementById('btn-toggle-mirror');
+        const btnToggleDirection = document.getElementById('btn-toggle-direction');
+        const btnResetCounter = document.getElementById('btn-reset-counter');
+
+        const hudContainer = document.getElementById('hud-container');
+        const descInArea = document.getElementById('desc-in-area');
+        const descOutArea = document.getElementById('desc-out-area');
+        const labelPassIn = document.getElementById('label-pass-in');
+        const labelPassOut = document.getElementById('label-pass-out');
+
+        const hudIn = document.getElementById('hud-count-in');
+        const hudOut = document.getElementById('hud-count-out');
+        const boardIn = document.getElementById('count-in');
+        const boardOut = document.getElementById('count-out');
+        const logList = document.getElementById('log-list');
+        const emptyLogMsg = document.getElementById('empty-log-msg');
+        const logCounter = document.getElementById('log-counter');
+
+        const flashIn = document.getElementById('flash-in');
+        const flashOut = document.getElementById('flash-out');
+
+        // トースト通知表示用の関数
+        function showToast(title, body, type = 'info') {
+            const toast = document.getElementById('toast');
+            const iconContainer = document.getElementById('toast-icon');
+            const toastTitle = document.getElementById('toast-title');
+            const toastBody = document.getElementById('toast-body');
+
+            toastTitle.innerText = title;
+            toastBody.innerText = body;
+
+            if (type === 'success') {
+                iconContainer.className = 'p-1.5 rounded-lg bg-emerald-500/20 text-emerald-400';
+                iconContainer.innerHTML = '<i data-lucide="check" class="w-4 h-4"></i>';
+            } else if (type === 'error') {
+                iconContainer.className = 'p-1.5 rounded-lg bg-rose-500/20 text-rose-400';
+                iconContainer.innerHTML = '<i data-lucide="alert-triangle" class="w-4 h-4"></i>';
+            } else {
+                iconContainer.className = 'p-1.5 rounded-lg bg-indigo-500/20 text-indigo-400';
+                iconContainer.innerHTML = '<i data-lucide="info" class="w-4 h-4"></i>';
+            }
+            lucide.createIcons();
+
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            setTimeout(() => {
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 3000);
+        }
+
+        // --- 1. 初期化処理 ---
+        async function init() {
+            lucide.createIcons();
+            updateGasStatusIndicator();
+            updateDirectionUIElements();
+            
+            try {
+                statusText.innerText = "AIモデルロード中...";
+                model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+                
+                statusText.innerText = "カメラ起動中...";
+                statusPing.className = "w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse";
+                
+                await setupCamera();
+                
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                
+                isCameraActive = true;
+                loadingOverlay.classList.add('opacity-0');
+                setTimeout(() => loadingOverlay.classList.add('hidden'), 500);
+                
+                statusText.innerText = "システム稼働中";
+                statusPing.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping";
+                
+                showToast("システム起動成功", "方向反転機能を搭載した高精度AI判定システムが起動しました。", "success");
+                detectLoop();
+                
+            } catch (err) {
+                console.error("Initialization Error: ", err);
+                statusText.innerText = "エラーが発生しました";
+                statusPing.className = "w-2.5 h-2.5 rounded-full bg-rose-500";
+                showToast("起動失敗", "カメラの許可状態を確認してください。", "error");
+            }
+        }
+
+        function updateGasStatusIndicator() {
+            if (isGasEnvironment) {
+                gasStatus.innerHTML = `<i data-lucide="cloud-lightning" class="w-4 h-4 text-emerald-400"></i><span class="text-xs text-emerald-400 font-bold">GAS: オンライン</span>`;
+            } else {
+                gasStatus.innerHTML = `<i data-lucide="cloud-off" class="w-4 h-4 text-slate-500"></i><span class="text-xs text-slate-400">GAS: デバッグ動作中</span>`;
+            }
+            lucide.createIcons();
+        }
+
+        async function setupCamera() {
+            const constraints = {
+                video: {
+                    width: { ideal: 640 },
+                    height: { ideal: 480 },
+                    facingMode: "user"
+                },
+                audio: false
+            };
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            video.srcObject = stream;
+            return new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    video.play();
+                    resolve();
+                };
+            });
+        }
+
+        // --- 2. トラッキングと入退場判定コアロジック ---
+        
+        function getDistance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        // 入退場の方向切り替えに応じて各所のガイド情報を更新
+        function updateDirectionUIElements() {
+            if (!isReversedDirection) {
+                // 通常モード：右から左が入場
+                // 常に上側が入場、下側が退場になるよう記述を制御
+                descInArea.innerText = "左側: 中(IN)から (入場)";
+                descOutArea.innerText = "右側: 外(OUT)から (退場)";
+                
+                labelPassIn.innerText = "← 右から左へ不感帯を通過";
+                labelPassOut.innerText = "左から右へ不感帯を通過 →";
+                
+                // 画像の上の入場(緑)と退場(赤)のHUD表示順も、エリアと合致するよう通常方向へ
+                hudContainer.classList.remove('flex-row-reverse');
+                hudContainer.classList.add('flex-row');
+            } else {
+                // 反転モード：左から右が入場
+                // 上部を入場、下部を退場に固定しつつ、左右の文字だけを入れ替え
+                descInArea.innerText = "右側: 中(IN)から (入場)";
+                descOutArea.innerText = "左側: 外(OUT)から (退場)";
+                
+                labelPassIn.innerText = "左から右へ不感帯を通過 →";
+                labelPassOut.innerText = "← 右から左へ不感帯を通過";
+                
+                // 画像の上の表示を入替（左側にOUTの赤、右側にINの緑が来るようにする）
+                hudContainer.classList.remove('flex-row');
+                hudContainer.classList.add('flex-row-reverse');
+            }
+        }
+
+        function updateTrackingAndDetectPass(detections) {
+            const frameWidth = canvas.width;
+            
+            // 判定線の定義 (ヒステリシス構造：不感帯を挟んだ2本の線)
+            const centerX = frameWidth * lineRatio;
+            const bufferPx = frameWidth * HYSTERESIS_BUFFER_RATIO;
+            
+            // 画面の物理左側と物理右側の境界線
+            const lineLeft = centerX - bufferPx;  // 左境界線 (物理左側エリアの端)
+            const lineRight = centerX + bufferPx; // 右境界線 (物理右側エリアの端)
+            
+            let currentFrameTracked = [];
+
+            // AIの検出枠から人だけを抽出
+            const detectedPersons = detections
+                .filter(d => d.class === 'person' && d.score > 0.45)
+                .map(d => {
+                    const [x, y, width, height] = d.bbox;
+                    return {
+                        x: x + width / 2, // 中心のX座標
+                        y: y + height / 2, // 中心のY座標
+                        bbox: d.bbox,
+                        score: d.score
+                    };
+                });
+
+            // 1. マッチング処理
+            detectedPersons.forEach(detected => {
+                let bestMatch = null;
+                let minDistance = DISTANCE_THRESHOLD;
+
+                trackedPersons.forEach(tracked => {
+                    const dist = getDistance({ x: tracked.currentX, y: tracked.currentY }, { x: detected.x, y: detected.y });
+                    if (dist < minDistance) {
+                        minDistance = dist;
+                        bestMatch = tracked;
+                    }
+                });
+
+                if (bestMatch) {
+                    bestMatch.lastX = bestMatch.currentX;
+                    bestMatch.lastY = bestMatch.currentY;
+                    bestMatch.currentX = detected.x;
+                    bestMatch.currentY = detected.y;
+                    bestMatch.bbox = detected.bbox;
+                    bestMatch.score = detected.score;
+                    bestMatch.missingFrames = 0;
+                    
+                    currentFrameTracked.push(bestMatch);
+                    trackedPersons = trackedPersons.filter(t => t.id !== bestMatch.id);
+                } else {
+                    // 新規人物オブジェクトの生成（反転表示を考慮した見た目上の座標を基準にする）
+                    let visualX = isMirror ? (frameWidth - detected.x) : detected.x;
+                    let visualLineLeft = isMirror ? (frameWidth - lineRight) : lineLeft;
+                    let visualLineRight = isMirror ? (frameWidth - lineLeft) : lineRight;
+
+                    // 出現したエリアを物理的な左右（LEFT/RIGHT）で把握
+                    let initialState = 'CENTER';
+                    if (visualX <= visualLineLeft) {
+                        initialState = 'LEFT';  // 物理左側から出現
+                    } else if (visualX >= visualLineRight) {
+                        initialState = 'RIGHT'; // 物理右側から出現
+                    }
+
+                    const newPerson = {
+                        id: nextPersonId++,
+                        lastX: detected.x,
+                        lastY: detected.y,
+                        currentX: detected.x,
+                        currentY: detected.y,
+                        bbox: detected.bbox,
+                        score: detected.score,
+                        missingFrames: 0,
+                        state: initialState, // LEFT, RIGHT, or CENTER
+                        hasCounted: false    // 重複判定防止
+                    };
+                    currentFrameTracked.push(newPerson);
+                }
+            });
+
+            // 見失い中のオブジェクト保持
+            trackedPersons.forEach(tracked => {
+                tracked.missingFrames++;
+                if (tracked.missingFrames < MISSING_THRESHOLD) {
+                    currentFrameTracked.push(tracked);
+                }
+            });
+
+            trackedPersons = currentFrameTracked;
+
+            // 2. ヒステリシス・トラッキング判定
+            trackedPersons.forEach(person => {
+                // 移動が検知できていない、または既に判定済みの人はスキップ
+                if (person.lastX === person.currentX || person.hasCounted) return;
+
+                const currX = person.currentX;
+
+                // 鏡像反転を考慮した見た目の現在地
+                let visualCurrX = isMirror ? (frameWidth - currX) : currX;
+                
+                let visualLineLeft = isMirror ? (frameWidth - lineRight) : lineLeft;
+                let visualLineRight = isMirror ? (frameWidth - lineLeft) : lineRight;
+
+                // 物理的な移動方向に基づき遷移を監視
+                if (person.state === 'RIGHT') {
+                    // 右側から現れた人が、左側の境界線を【完全にまたぎきった】
+                    if (visualCurrX < visualLineLeft) {
+                        person.state = 'LEFT';
+                        person.hasCounted = true; // 1回切り判定にロック
+                        
+                        // 方向設定に合わせて論理上の入退場(IN/OUT)を決定
+                        // 通常：右→左は入場(IN) / 反転：右→左は退場(OUT)
+                        const direction = isReversedDirection ? 'OUT' : 'IN';
+                        registerPass(direction, person.id);
+                    }
+                } else if (person.state === 'LEFT') {
+                    // 左側から現れた人が、右側の境界線を【完全にまたぎきった】
+                    if (visualCurrX > visualLineRight) {
+                        person.state = 'RIGHT';
+                        person.hasCounted = true; // 1回切り判定にロック
+                        
+                        // 通常：左→右は退場(OUT) / 反転：左→右は入場(IN)
+                        const direction = isReversedDirection ? 'IN' : 'OUT';
+                        registerPass(direction, person.id);
+                    }
+                } else if (person.state === 'CENTER') {
+                    // 初期位置が中央の不感帯だった場合は左右の領域に抜け切るまで待つ
+                    if (visualCurrX <= visualLineLeft) {
+                        person.state = 'LEFT';
+                    } else if (visualCurrX >= visualLineRight) {
+                        person.state = 'RIGHT';
+                    }
+                }
+            });
+        }
+
+        // --- 3. 入退場確定処理とGAS送信 ---
+        function registerPass(direction, personId) {
+            const timeStr = new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            
+            if (direction === 'IN') {
+                inCount++;
+                hudIn.innerText = inCount;
+                boardIn.innerText = inCount;
+                triggerFlash('IN');
+                addLog('IN', personId, timeStr);
+                showToast("【入場検知】", `人物(ID: ${personId})が中に入りました。`, "success");
+                sendToGas("入場", personId);
+            } else {
+                outCount++;
+                hudOut.innerText = outCount;
+                boardOut.innerText = outCount;
+                triggerFlash('OUT');
+                addLog('OUT', personId, timeStr);
+                showToast("【退場検知】", `人物(ID: ${personId})が外に出ました。`, "info");
+                sendToGas("退場", personId);
+            }
+        }
+
+        function triggerFlash(direction) {
+            const targetFlash = direction === 'IN' ? flashIn : flashOut;
+            targetFlash.classList.remove('opacity-0');
+            targetFlash.classList.add('opacity-100');
+            setTimeout(() => {
+                targetFlash.classList.remove('opacity-100');
+                targetFlash.classList.add('opacity-0');
+            }, 180);
+        }
+
+        function addLog(type, id, time) {
+            emptyLogMsg.classList.add('hidden');
+            logsCount++;
+            logCounter.innerText = `${logsCount}件`;
+
+            const item = document.createElement('div');
+            if (type === 'IN') {
+                item.className = "flex items-center justify-between p-2.5 bg-emerald-950/40 border border-emerald-900/50 rounded-lg animate-fadeIn text-emerald-200";
+                item.innerHTML = `
+                    <div class="flex items-center gap-2">
+                        <span class="px-2 py-0.5 bg-emerald-500 text-slate-950 font-bold rounded-md text-[10px]">IN</span>
+                        <span class="font-bold">ID: ${id}</span>
+                    </div>
+                    <span class="text-slate-400 text-xs">${time}</span>
+                `;
+            } else {
+                item.className = "flex items-center justify-between p-2.5 bg-rose-950/40 border border-rose-900/50 rounded-lg animate-fadeIn text-rose-200";
+                item.innerHTML = `
+                    <div class="flex items-center gap-2">
+                        <span class="px-2 py-0.5 bg-rose-500 text-slate-950 font-bold rounded-md text-[10px]">OUT</span>
+                        <span class="font-bold">ID: ${id}</span>
+                    </div>
+                    <span class="text-slate-400 text-xs">${time}</span>
+                `;
+            }
+
+            logList.insertBefore(item, logList.firstChild);
+        }
+
+        function sendToGas(type, personId) {
+            if (isGasEnvironment) {
+                google.script.run
+                    .withSuccessHandler((response) => {
+                        console.log("GAS Response:", response);
+                        showToast("GAS同期完了", `${type}データをクラウドに追記しました。`, "success");
+                    })
+                    .withFailureHandler((error) => {
+                        console.error("GAS Error:", error);
+                        showToast("GAS書き込みエラー", "スプレッドシートへの同期に失敗しました。", "error");
+                    })
+                    .logRecord(type, personId);
+            } else {
+                console.log(`[LOCAL] GAS未検出のためローカル動作: ${type} (ID: ${personId})`);
+            }
+        }
+
+        // --- 4. 描画 & AI推論ループ ---
+        async function detectLoop() {
+            if (!isCameraActive) return;
+
+            const predictions = await model.detect(video);
+            updateTrackingAndDetectPass(predictions);
+            drawCanvas(predictions);
+
+            requestAnimationFrame(detectLoop);
+        }
+
+        function drawCanvas(predictions) {
+            ctx.save();
+            if (isMirror) {
+                ctx.translate(canvas.width, 0);
+                ctx.scale(-1, 1);
+            }
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            ctx.restore();
+
+            // 境界座標の計算
+            const centerX = canvas.width * lineRatio;
+            const bufferPx = canvas.width * HYSTERESIS_BUFFER_RATIO;
+            const lineLeft = centerX - bufferPx;
+            const lineRight = centerX + bufferPx;
+
+            // 1. 中央不感帯エリア(バッファ領域)の描画
+            ctx.fillStyle = 'rgba(99, 102, 241, 0.25)'; // 紫の境界バッファ
+            ctx.fillRect(lineLeft, 0, lineRight - lineLeft, canvas.height);
+
+            // 左右エリアの色分け：isReversedDirectionの状態に応じて色（緑と赤）を入れ替える
+            const colorLeftBg = !isReversedDirection ? 'rgba(16, 185, 129, 0.08)' : 'rgba(244, 63, 94, 0.08)';
+            const colorRightBg = !isReversedDirection ? 'rgba(244, 63, 94, 0.08)' : 'rgba(16, 185, 129, 0.08)';
+            const colorLeftBorder = !isReversedDirection ? '#10b981' : '#f43f5e';
+            const colorRightBorder = !isReversedDirection ? '#f43f5e' : '#10b981';
+
+            // 左側エリア背景
+            ctx.fillStyle = colorLeftBg;
+            ctx.fillRect(0, 0, lineLeft, canvas.height);
+
+            // 右側エリア背景
+            ctx.fillStyle = colorRightBg;
+            ctx.fillRect(lineRight, 0, canvas.width - lineRight, canvas.height);
+
+            // 2. 2本のヒステリシス境界線の描画
+            ctx.lineWidth = 2;
+            
+            // 左境界線
+            ctx.beginPath();
+            ctx.strokeStyle = colorLeftBorder;
+            ctx.moveTo(lineLeft, 0);
+            ctx.lineTo(lineLeft, canvas.height);
+            ctx.stroke();
+
+            // 右境界線
+            ctx.beginPath();
+            ctx.strokeStyle = colorRightBorder;
+            ctx.moveTo(lineRight, 0);
+            ctx.lineTo(lineRight, canvas.height);
+            ctx.stroke();
+
+            // ガイドテキスト（中央上部）
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillRect(centerX - 60, 10, 120, 20);
+            ctx.fillStyle = '#1e1b4b';
+            ctx.fillText('HYSTERESIS BUFFER', centerX, 24);
+
+            // 画面下部の矢印ガイダンス（屋内・屋外から、中・外に名称修正）
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+            ctx.font = 'bold 12px sans-serif';
+            if (!isReversedDirection) {
+                ctx.textAlign = 'left';
+                ctx.fillText('◀ 中 [IN] (入場エリア)', 15, canvas.height - 20);
+                ctx.textAlign = 'right';
+                ctx.fillText('外 [OUT] (退場エリア) ▶', canvas.width - 15, canvas.height - 20);
+            } else {
+                ctx.textAlign = 'left';
+                ctx.fillText('◀ 外 [OUT] (退場エリア)', 15, canvas.height - 20);
+                ctx.textAlign = 'right';
+                ctx.fillText('中 [IN] (入場エリア) ▶', canvas.width - 15, canvas.height - 20);
+            }
+
+            // 3. 追跡人物の描画
+            trackedPersons.forEach(person => {
+                const opacity = person.missingFrames > 0 ? 0.3 : 0.85;
+                const [x, y, width, height] = person.bbox;
+                
+                let drawX = x;
+                if (isMirror) {
+                    drawX = canvas.width - x - width;
+                }
+
+                // 既に判定を終えているオブジェクトは、重複防止のためにグレーのアウトラインにする
+                let personBorderColor;
+                if (person.hasCounted) {
+                    personBorderColor = `rgba(148, 163, 184, ${opacity})`;
+                } else {
+                    // 現在いるエリア色に合わせて枠線を決定
+                    personBorderColor = person.state === 'LEFT' ? `rgba(${!isReversedDirection ? '16, 185, 129' : '244, 63, 94'}, ${opacity})` : `rgba(${!isReversedDirection ? '244, 63, 94' : '16, 185, 129'}, ${opacity})`;
+                }
+                ctx.strokeStyle = personBorderColor;
+                ctx.lineWidth = 3;
+                ctx.strokeRect(drawX, y, width, height);
+
+                // ステータスバッジの描画
+                let badgeColor;
+                if (person.hasCounted) {
+                    badgeColor = `rgba(71, 85, 105, ${opacity})`;
+                } else {
+                    badgeColor = person.state === 'LEFT' ? `rgba(${!isReversedDirection ? '16, 185, 129' : '244, 63, 94'}, ${opacity})` : `rgba(${!isReversedDirection ? '244, 63, 94' : '16, 185, 129'}, ${opacity})`;
+                }
+                ctx.fillStyle = badgeColor;
+                ctx.fillRect(drawX, y - 24, 115, 24);
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 11px sans-serif';
+                ctx.textAlign = 'left';
+
+                // 表示文言の算出（「中から」「外から」に修正）
+                let areaName = "中央";
+                if (person.state === 'LEFT') {
+                    areaName = !isReversedDirection ? "中(IN)から" : "外(OUT)から";
+                } else if (person.state === 'RIGHT') {
+                    areaName = !isReversedDirection ? "外(OUT)から" : "中(IN)から";
+                }
+                const countStatus = person.hasCounted ? "判定完了" : areaName;
+
+                ctx.fillText(`👤 ID: ${person.id} (${countStatus})`, drawX + 6, y - 8);
+
+                // 中心点（重心）の描画
+                let drawCenterX = person.currentX;
+                if (isMirror) {
+                    drawCenterX = canvas.width - person.currentX;
+                }
+                ctx.beginPath();
+                ctx.arc(drawCenterX, person.currentY, 6, 0, 2 * Math.PI);
+                ctx.fillStyle = person.hasCounted ? '#cbd5e1' : '#ffffff';
+                ctx.fill();
+                ctx.strokeStyle = '#000000';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+        }
+
+        // --- 5. イベントリスナーとUI操作 ---
+        
+        // 判定ラインのツマミ調整
+        rangeLine.addEventListener('input', (e) => {
+            lineRatio = e.target.value / 100;
+            rangeVal.innerText = `${e.target.value}%`;
+        });
+
+        // 左右反転ボタン
+        btnToggleMirror.addEventListener('click', () => {
+            isMirror = !isMirror;
+            showToast("表示変更", `左右反転表示を ${isMirror ? 'オン' : 'オフ'} にしました。`, "info");
+        });
+
+        // 判定方向入れ替えボタン (UI連動・順序制御をさらに高精度化)
+        btnToggleDirection.addEventListener('click', () => {
+            isReversedDirection = !isReversedDirection;
+            updateDirectionUIElements();
+            
+            const directionText = !isReversedDirection 
+                ? "【右から左への移動が「入場」、左から右への移動が「退場」】" 
+                : "【左から右への移動が「入場」、右から左への移動が「退場」】";
+
+            showToast("判定方向を入替", `カウント方向を切り替えました。\n${directionText}`, "success");
+            
+            // 既存の追跡オブジェクトの初期ステートを再定義して、方向チェンジ直後の瞬間的誤判定を防止する
+            const centerX = canvas.width * lineRatio;
+            trackedPersons.forEach(person => {
+                let visualX = isMirror ? (canvas.width - person.currentX) : person.currentX;
+                const bufferPx = canvas.width * HYSTERESIS_BUFFER_RATIO;
+                const visualLineLeft = isMirror ? (canvas.width - (centerX + bufferPx)) : (centerX - bufferPx);
+                const visualLineRight = isMirror ? (canvas.width - (centerX - bufferPx)) : (centerX + bufferPx);
+
+                if (visualX <= visualLineLeft) {
+                    person.state = 'LEFT';
+                } else if (visualX >= visualLineRight) {
+                    person.state = 'RIGHT';
+                } else {
+                    person.state = 'CENTER';
+                }
+            });
+        });
+
+        // カウントクリアボタン
+        btnResetCounter.addEventListener('click', () => {
+            if (confirm("カウンターをリセットして0に戻しますか？\n(スプレッドシートの既存データは消去されません)")) {
+                inCount = 0;
+                outCount = 0;
+                hudIn.innerText = 0;
+                hudOut.innerText = 0;
+                boardIn.innerText = 0;
+                boardOut.innerText = 0;
+                logsCount = 0;
+                logCounter.innerText = "0件";
+                logList.innerHTML = `
+                    <div class="text-center text-slate-500 py-8" id="empty-log-msg">
+                        <i data-lucide="video-off" class="w-8 h-8 mx-auto mb-2 opacity-50"></i>
+                        まだ検知履歴はありません。
+                    </div>
+                `;
+                lucide.createIcons();
+                showToast("リセット完了", "カウンターをクリアしました。", "success");
+            }
+        });
+
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
