@@ -4,8 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI入退場カウンター</title>
+    <!-- Tailwind CSS (Modern UI Framework) -->
     <script src="https://cdn.tailwindcss.com"></script>
     
+    <!-- CDNエラー検知用の仕掛け -->
     <script>
         window.cdnErrors = [];
         window.addEventListener('error', function(e) {
@@ -17,8 +19,10 @@
         }, true);
     </script>
 
+    <!-- TensorFlow.js and COCO-SSD (AI Models) -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs" onerror="window.cdnErrors.push('TensorFlow.js (tfjs)')"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd" onerror="window.cdnErrors.push('COCO-SSD')"></script>
+    <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest" onerror="window.cdnErrors.push('Lucide Icons')"></script>
     <style>
         .mirror {
@@ -28,6 +32,7 @@
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen font-sans flex flex-col">
 
+    <!-- システムエラー警告用オーバーレイ（ロードに失敗した時に表示） -->
     <div id="system-error-screen" class="hidden fixed inset-0 bg-slate-950/95 flex flex-col items-center justify-center p-6 text-center z-50 animate-fadeIn">
         <div class="p-3.5 bg-rose-500/10 rounded-full text-rose-500 mb-4 animate-pulse">
             <svg class="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -47,6 +52,7 @@
         </div>
     </div>
 
+    <!-- ヘッダー -->
     <header class="bg-slate-900 border-b border-slate-800 p-4 shadow-md">
         <div class="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
             <div class="flex items-center gap-3">
@@ -58,6 +64,7 @@
                 </div>
             </div>
             
+            <!-- ステータス表示 -->
             <div class="flex items-center gap-4 text-sm">
                 <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-800 rounded-full border border-slate-700">
                     <span class="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping" id="status-ping"></span>
@@ -71,13 +78,18 @@
         </div>
     </header>
 
+    <!-- メインコンテンツ -->
     <main class="flex-1 max-w-7xl w-full mx-auto p-4 grid grid-cols-1 lg:grid-cols-3 gap-6">
         
+        <!-- 左・中央：カメラプレビュー・設定 -->
         <div class="lg:col-span-2 flex flex-col gap-4">
+            
+            <!-- メインカメラ表示エリア -->
             <div class="relative bg-slate-900 rounded-2xl border border-slate-800 overflow-hidden shadow-2xl flex items-center justify-center aspect-video">
                 <video id="webcam" autoplay playsinline muted class="hidden"></video>
                 <canvas id="canvas" class="w-full h-full object-cover"></canvas>
 
+                <!-- ローディングオーバーレイ -->
                 <div id="loading-overlay" class="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center gap-4 z-10 transition-opacity duration-500">
                     <div class="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2"></div>
                     <p class="text-slate-300 text-sm font-semibold tracking-wide">AIシステムの初期化中</p>
@@ -86,21 +98,26 @@
                     </div>
                 </div>
 
+                <!-- 画面内簡易カウンター表示 (Flexboxのorderを使用して確実に入れ替えます) -->
                 <div id="hud-container" class="absolute top-4 left-4 right-4 flex justify-between pointer-events-none z-5 transition-all duration-300">
+                    <!-- IN (入場) -->
                     <div id="hud-in-box" class="bg-emerald-500/90 text-white px-4 py-2 rounded-xl backdrop-blur-md flex items-center gap-2 shadow-lg transition-all duration-300">
                         <span class="text-xs font-bold uppercase tracking-wider">IN (入場)</span>
                         <span id="hud-count-in" class="text-xl font-black">0</span>
                     </div>
+                    <!-- OUT (退場) -->
                     <div id="hud-out-box" class="bg-rose-500/90 text-white px-4 py-2 rounded-xl backdrop-blur-md flex items-center gap-2 shadow-lg transition-all duration-300">
                         <span id="hud-count-out" class="text-xl font-black">0</span>
                         <span class="text-xs font-bold uppercase tracking-wider">OUT (退場)</span>
                     </div>
                 </div>
 
+                <!-- 画面上の通過時フラッシュエフェクト -->
                 <div id="flash-in" class="absolute inset-0 bg-emerald-500/20 pointer-events-none opacity-0 transition-opacity duration-200 z-4"></div>
                 <div id="flash-out" class="absolute inset-0 bg-rose-500/20 pointer-events-none opacity-0 transition-opacity duration-200 z-4"></div>
             </div>
 
+            <!-- 操作・設定パネル -->
             <div class="bg-slate-900 p-4 rounded-xl border border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                     <label class="block text-xs text-slate-400 mb-1.5 font-semibold">カメラ・方向設定</label>
@@ -140,6 +157,7 @@
             </div>
         </div>
 
+        <!-- 右：検知ログとカウント詳細 -->
         <div class="flex flex-col gap-6">
             <div class="grid grid-cols-2 gap-4">
                 <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between shadow-lg relative overflow-hidden">
@@ -154,6 +172,7 @@
                 </div>
             </div>
 
+            <!-- 検知ログ履歴 -->
             <div class="bg-slate-900 border border-slate-800 rounded-xl flex-1 flex flex-col overflow-hidden shadow-lg max-h-[400px] lg:max-h-none">
                 <div class="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
                     <div class="flex items-center gap-2"><i data-lucide="history" class="w-4 h-4 text-indigo-400"></i><h2 class="text-sm font-bold">リアルタイム通過ログ</h2></div>
@@ -176,7 +195,13 @@
         <div><p id="toast-title" class="text-xs font-bold text-white"></p><p id="toast-body" class="text-[11px] text-slate-400"></p></div>
     </div>
 
+    <!-- ========================================================= -->
+    <!-- メインスクリプト -->
+    <!-- ========================================================= -->
     <script>
+        // ==========================================
+        // 【重要】ここにコピーしたGASウェブアプリのURLを貼り付けてください
+        // ==========================================
         const GAS_API_URL = "https://script.google.com/macros/s/AKfycbw_KYm_VppXFS_EY7PpvKUhmxkzxI12ib_fyeX2VdjR1gM-OVMoLfsvL-XJwcdYabII/exec";
 
         let model = null;
@@ -423,9 +448,16 @@
             const centerX = canvas.width * lineRatio; const bufferPx = canvas.width * HYSTERESIS_BUFFER_RATIO;
             const lineLeft = centerX - bufferPx; const lineRight = centerX + bufferPx;
 
-            ctx.fillStyle = 'rgba(99, 102, 241, 0.25)'; ctx.fillRect(lineLeft, 0, lineRight - lineLeft, canvas.height);
-            ctx.fillStyle = !isReversedDirection ? 'rgba(16, 185, 129, 0.08)' : 'rgba(244, 63, 94, 0.08)'; ctx.fillRect(0, 0, lineLeft, canvas.height);
-            ctx.fillStyle = !isReversedDirection ? 'rgba(244, 63, 94, 0.08)' : 'rgba(16, 185, 129, 0.08)'; ctx.fillRect(lineRight, 0, canvas.width - lineRight, canvas.height);
+            ctx.fillStyle = 'rgba(99, 102, 241, 0.25)'; 
+            ctx.fillRect(lineLeft, 0, lineRight - lineLeft, canvas.height);
+
+            const colorLeftBg = !isReversedDirection ? 'rgba(16, 185, 129, 0.08)' : 'rgba(244, 63, 94, 0.08)';
+            const colorRightBg = !isReversedDirection ? 'rgba(244, 63, 94, 0.08)' : 'rgba(16, 185, 129, 0.08)';
+            const colorLeftBorder = !isReversedDirection ? '#10b981' : '#f43f5e';
+            const colorRightBorder = !isReversedDirection ? '#f43f5e' : '#10b981';
+
+            ctx.fillStyle = colorLeftBg; ctx.fillRect(0, 0, lineLeft, canvas.height);
+            ctx.fillStyle = colorRightBg; ctx.fillRect(lineRight, 0, canvas.width - lineRight, canvas.height);
 
             ctx.lineWidth = 2;
             ctx.beginPath(); ctx.strokeStyle = !isReversedDirection ? '#10b981' : '#f43f5e'; ctx.moveTo(lineLeft, 0); ctx.lineTo(lineLeft, canvas.height); ctx.stroke();
@@ -434,23 +466,18 @@
             ctx.fillStyle = '#ffffff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center';
             ctx.fillRect(centerX - 60, 10, 120, 20); ctx.fillStyle = '#1e1b4b'; ctx.fillText('HYSTERESIS BUFFER', centerX, 24);
 
-            trackedPersons.forEach(person => {
-                const opacity = person.missingFrames > 0 ? 0.3 : 0.85;
-                const [x, y, width, height] = person.bbox;
-                let drawX = isMirror ? (canvas.width - x - width) : x;
-
-                let personBorderColor = person.hasCounted ? `rgba(148, 163, 184, ${opacity})` : (person.state === 'LEFT' ? `rgba(${!isReversedDirection ? '16, 185, 129' : '244, 63, 94'}, ${opacity})` : `rgba(${!isReversedDirection ? '244, 63, 94' : '16, 185, 129'}, ${opacity})`);
-                ctx.strokeStyle = personBorderColor; ctx.lineWidth = 3; ctx.strokeRect(drawX, y, width, height);
-                ctx.fillStyle = personBorderColor; ctx.fillRect(drawX, y - 24, 115, 24);
+            trackedPersons.forEach(p => {
+                const op = p.missingFrames > 0 ? 0.3 : 0.85; let dX = isMirror ? (canvas.width - p.bbox[0] - p.bbox[2]) : p.bbox[0];
+                let col = p.hasCounted ? `rgba(148,163,184,${op})` : (p.state === 'LEFT' ? `rgba(${!isReversedDirection ? '16,185,129' : '244,63,94'},${op})` : `rgba(${!isReversedDirection ? '244,63,94' : '16,185,129'},${op})`);
+                ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.strokeRect(dX, p.bbox[1], p.bbox[2], p.bbox[3]);
+                ctx.fillStyle = col; ctx.fillRect(dX, p.bbox[1] - 24, 115, 24);
+                ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left';
+                let areaName = p.state === 'LEFT' ? (!isReversedDirection ? "中(IN)" : "外(OUT)") : (!isReversedDirection ? "外(OUT)" : "中(IN)");
+                ctx.fillText(`👤 ID: ${p.id} (${p.hasCounted ? "完了" : areaName})`, dX + 6, p.bbox[1] - 8);
                 
-                ctx.fillStyle = '#ffffff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left';
-                let areaName = person.state === 'LEFT' ? (!isReversedDirection ? "中(IN)" : "外(OUT)") : (!isReversedDirection ? "外(OUT)" : "中(IN)");
-                ctx.fillText(`👤 ID: ${person.id} (${person.hasCounted ? "完了" : areaName})`, drawX + 6, y - 8);
-
-                let drawCenterX = isMirror ? (canvas.width - person.currentX) : person.currentX;
-                ctx.beginPath(); ctx.arc(drawCenterX, person.currentY, 6, 0, 2 * Math.PI);
-                ctx.fillStyle = person.hasCounted ? '#cbd5e1' : '#ffffff'; ctx.fill();
-                ctx.strokeStyle = '#000000'; ctx.lineWidth = 2; ctx.stroke();
+                let dcX = isMirror ? (canvas.width - p.currentX) : p.currentX;
+                ctx.beginPath(); ctx.arc(dcX, p.currentY, 6, 0, 2 * Math.PI); ctx.fillStyle = p.hasCounted ? '#cbd5e1' : '#fff'; ctx.fill();
+                ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.stroke();
             });
         }
 
